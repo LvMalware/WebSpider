@@ -1,0 +1,145 @@
+#!/usr/bin/env perl
+
+use utf8;
+use strict;
+use threads;
+use warnings;
+use Mojo::URL;
+use Getopt::Long;
+use Thread::Queue;
+use threads::shared;
+use Mojo::UserAgent;
+
+my $depth    = 4;
+my %found    :shared;
+my $waiting  :shared;
+my $threads  = 10;
+my $to_crawl = Thread::Queue->new;
+my $to_print = Thread::Queue->new;
+my @hostnames;
+
+sub set_idle {
+    lock($waiting);
+    ++$waiting
+}
+sub unset_idle {
+    lock($waiting);
+    --$waiting
+}
+
+sub in_scope {
+    my ($host) = @_;
+    return 0 unless $host;
+    foreach my $regex (@hostnames) {
+        return 1 if $host =~ /$regex/i
+    }
+    0
+}
+
+sub visited {
+    my ($link) = @_;
+    my $uri = Mojo::URL->new($link)->fragment('');
+    $uri->query(join('&', $uri->query->names->@*));
+    $link = "$uri";
+    lock(%found);
+    $found{$link} ++;
+}
+
+sub spider_loop {
+    no warnings;
+    local $SIG{__WARN__} = sub { };
+    my $tid = threads->self()->tid();
+    my $agent = Mojo::UserAgent->new;
+    while (defined(my $next = $to_crawl->dequeue())) {
+
+        unset_idle;
+
+        my ($level, $url) = @{$next};
+        my $base = Mojo::URL->new($url);
+        my $resp = eval { $agent->get($url)->result } || { set_idle && next };
+        my $html = $resp->dom;
+
+        for my $href ($html->find('[href]')->@*) {
+            my $link = Mojo::URL->new($href->{href} || next);
+            $link->host($base->host)->scheme($base->scheme) unless $link->is_abs;
+            next unless in_scope($link->host);
+            next if visited($link);
+            $to_print->enqueue($link->to_string);
+            if (defined($resp->headers->content_type) && $resp->headers->content_type =~ /html/i) {
+                $to_crawl->enqueue([$level + 1, $link->to_string]) unless $level > $depth;
+            }
+        }
+
+        eval { $to_crawl->end(); last } if set_idle == $threads && $to_crawl->pending() == 0;
+    }
+    eval { $to_print->end() } if $waiting == $threads;
+}
+
+sub help {
+    print <<HELP;
+$0 - Crawl websites and log the links found
+Usage: $0 [option(s)] <seed> ... <seed>
+
+Options:
+    -h, --help          Show this help message and exit
+    -s, --scope         Add domains to scope (wildcard is supported)
+    -i, --input         Read seeds from file
+    -d, --depth         Maximum depth to crawl
+    -o, --output        Save results to file
+    -t, --threads       Number of concurrent threads (default: 10)
+
+HELP
+    exit 0
+}
+
+sub scope {
+    my ($host) = @_;
+    my $regex = quotemeta($host) =~ s/\\?\*/\.\*/gr;
+    my $safe  = quotemeta($regex);
+    push @hostnames, $regex unless grep(/^$safe$/, @hostnames);
+}
+
+sub main {
+    my ($output, $input) = ("-", "");
+    GetOptions(
+        "h|help"        => \&help,
+        "s|scope=s"     => \&scope,
+        "i|input=s"     => \$input,
+        "d|depth=s"     => \$depth,
+        "o|outpus=s"    => \$output,
+        "t|threads=i"   => \$threads,
+    );
+
+    die "Invalid depth\n" unless $depth > 0;
+    die "No targets/seeds\n" unless $input || @ARGV;
+    die "Invalid number of threads\n" unless $threads > 0;
+
+    my @seeds = @ARGV;
+    if ($input) {
+        open(my $stdin, "<$input") || die "$0: Can't read $input: $!\n";
+        push @seeds, map { chomp; $_ } <$stdin>;
+        close($stdin);
+    }
+
+    open(my $stdout, ">$output") || die "$0: Can't write to $output: $!\n";
+
+    for my $seed (@seeds) {
+        scope(Mojo::URL->new($seed)->host);
+        $to_crawl->enqueue([1, $seed]);
+    }
+
+    $waiting = $threads;
+    async \&spider_loop for 1 .. $threads;
+
+    no warnings;
+    while (threads->list(threads::running) > 0 || $to_print->pending() > 0) {
+        my $url = $to_print->dequeue() || next;
+        print $stdout "$url\n"
+    }
+
+    $_->join() for threads->list(threads::all);
+
+    0
+}
+
+exit main unless caller
