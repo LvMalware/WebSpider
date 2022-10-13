@@ -1,2 +1,2 @@
 requires 'Mojo::URL';
-requires 'WWW::Mechanize';
+requires 'Mojo::UserAgent';
