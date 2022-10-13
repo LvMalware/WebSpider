@@ -12,6 +12,7 @@ use Mojo::UserAgent;
 
 my $depth    = 4;
 my %found    :shared;
+my $uagent   = "SpiderPl/1.0";
 my $waiting  :shared;
 my $threads  = 10;
 my $to_crawl = Thread::Queue->new;
@@ -46,10 +47,13 @@ sub visited {
 }
 
 sub spider_loop {
+
+    # ignore Mojo::Utils errors
     no warnings;
     local $SIG{__WARN__} = sub { };
-    my $tid = threads->self()->tid();
+
     my $agent = Mojo::UserAgent->new;
+    $agent->transactor->name($uagent);
     while (defined(my $next = $to_crawl->dequeue())) {
 
         unset_idle;
@@ -85,6 +89,7 @@ Options:
     -s, --scope         Add domains to scope (wildcard is supported)
     -i, --input         Read seeds from file
     -d, --depth         Maximum depth to crawl
+    -a, --agent         Custom User-Agent (default: $uagent)
     -o, --output        Save results to file
     -t, --threads       Number of concurrent threads (default: 10)
 
@@ -106,6 +111,7 @@ sub main {
         "s|scope=s"     => \&scope,
         "i|input=s"     => \$input,
         "d|depth=s"     => \$depth,
+        "a|agent=s"     => \$uagent,
         "o|outpus=s"    => \$output,
         "t|threads=i"   => \$threads,
     );
