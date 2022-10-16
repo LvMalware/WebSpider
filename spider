@@ -32,7 +32,7 @@ sub in_scope {
     my ($host) = @_;
     return 0 unless $host;
     foreach my $regex (@hostnames) {
-        return 1 if $host =~ /$regex/i
+        return 1 if $host =~ /^$regex$/i
     }
     0
 }
@@ -129,8 +129,10 @@ sub main {
 
     open(my $stdout, ">$output") || die "$0: Can't write to $output: $!\n";
 
+    my $new_scope = @hostnames > 0;
+
     for my $seed (@seeds) {
-        scope(Mojo::URL->new($seed)->host);
+        scope(Mojo::URL->new($seed)->host) unless $new_scope;
         $to_crawl->enqueue([1, $seed]);
     }
 
